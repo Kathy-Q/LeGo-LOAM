@@ -129,7 +129,7 @@ public:
         segMsg.segmentedCloudColInd.assign(N_SCAN*Horizon_SCAN, 0);
         segMsg.segmentedCloudRange.assign(N_SCAN*Horizon_SCAN, 0);
 
-        std::pair<int8_t, int8_t> neighbor;
+        std::pair<int8_t, int8_t> neighbor;//邻近点 上下左右
         neighbor.first = -1; neighbor.second =  0; neighborIterator.push_back(neighbor);
         neighbor.first =  0; neighbor.second =  1; neighborIterator.push_back(neighbor);
         neighbor.first =  0; neighbor.second = -1; neighborIterator.push_back(neighbor);
@@ -264,25 +264,29 @@ public:
         // -1, no valid info to check if ground of not
         //  0, initial value, after validation, means not ground
         //  1, ground
+        //16线雷达 100hz 就是360度 Horizon_SCAN=1800个点 相差0.2度
         for (size_t j = 0; j < Horizon_SCAN; ++j){
-            for (size_t i = 0; i < groundScanInd; ++i){
+            //16线雷达不让它超过一半 
 
+            for (size_t i = 0; i < groundScanInd; ++i){
+                //同一列的相邻点
                 lowerInd = j + ( i )*Horizon_SCAN;
                 upperInd = j + (i+1)*Horizon_SCAN;
-
+                //是否是有效的点
                 if (fullCloud->points[lowerInd].intensity == -1 ||
                     fullCloud->points[upperInd].intensity == -1){
                     // no info to check, invalid points
                     groundMat.at<int8_t>(i,j) = -1;
                     continue;
                 }
-                    
+                 // 取出相邻点  
                 diffX = fullCloud->points[upperInd].x - fullCloud->points[lowerInd].x;
                 diffY = fullCloud->points[upperInd].y - fullCloud->points[lowerInd].y;
                 diffZ = fullCloud->points[upperInd].z - fullCloud->points[lowerInd].z;
-
+                //并高度和水平的夹角
                 angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY) ) * 180 / M_PI;
-
+                //sensorMountAngle=0 因为lidar是水平安装 因此设置为0
+                //满足要求就为地面点
                 if (abs(angle - sensorMountAngle) <= 10){
                     groundMat.at<int8_t>(i,j) = 1;
                     groundMat.at<int8_t>(i+1,j) = 1;
@@ -294,11 +298,13 @@ public:
         // note that ground remove is from 0~N_SCAN-1, need rangeMat for mark label matrix for the 16th scan
         for (size_t i = 0; i < N_SCAN; ++i){
             for (size_t j = 0; j < Horizon_SCAN; ++j){
+                //不参与后面线特征和面特征的提取
                 if (groundMat.at<int8_t>(i,j) == 1 || rangeMat.at<float>(i,j) == FLT_MAX){
-                    labelMat.at<int>(i,j) = -1;
+                    labelMat.at<int>(i,j) =  -1;
                 }
             }
         }
+        //可视化操作 ，将地面点push出去 主要在rviz上使用
         if (pubGroundCloud.getNumSubscribers() != 0){
             for (size_t i = 0; i <= groundScanInd; ++i){
                 for (size_t j = 0; j < Horizon_SCAN; ++j){
@@ -309,13 +315,15 @@ public:
         }
     }
 
+    //非地面点进行聚类
     void cloudSegmentation(){
-        // segmentation process
+        // segmentation process 遍历每个点
         for (size_t i = 0; i < N_SCAN; ++i)
             for (size_t j = 0; j < Horizon_SCAN; ++j)
+            //如果该点没有被标记过
                 if (labelMat.at<int>(i,j) == 0)
                     labelComponents(i, j);
-
+           
         int sizeOfSegCloud = 0;
         // extract segmented cloud for lidar odometry
         for (size_t i = 0; i < N_SCAN; ++i) {
@@ -323,8 +331,10 @@ public:
             segMsg.startRingIndex[i] = sizeOfSegCloud-1 + 5;
 
             for (size_t j = 0; j < Horizon_SCAN; ++j) {
+                // 如果聚类出来的点 或者是地面点
                 if (labelMat.at<int>(i,j) > 0 || groundMat.at<int8_t>(i,j) == 1){
-                    // outliers that will not be used for optimization (always continue)
+                    // outliers that will not be used for optimization (always continue) 
+                    //也可能是噪点
                     if (labelMat.at<int>(i,j) == 999999){
                         if (i > groundScanInd && j % 5 == 0){
                             outlierCloud->push_back(fullCloud->points[j + i*Horizon_SCAN]);
@@ -334,11 +344,12 @@ public:
                         }
                     }
                     // majority of ground points are skipped
+                    //点很多 进行一个下采样 每5个点取一个点
                     if (groundMat.at<int8_t>(i,j) == 1){
                         if (j%5!=0 && j>5 && j<Horizon_SCAN-5)
                             continue;
                     }
-                    // mark ground points so they will not be considered as edge features later
+                    // mark ground points so they will not be considered as edge features later 发给里程计
                     segMsg.segmentedCloudGroundFlag[sizeOfSegCloud] = (groundMat.at<int8_t>(i,j) == 1);
                     // mark the points' column index for marking occlusion later
                     segMsg.segmentedCloudColInd[sizeOfSegCloud] = j;
@@ -365,46 +376,49 @@ public:
                 }
             }
         }
-    }
+    } 
 
     void labelComponents(int row, int col){
         // use std::queue std::vector std::deque will slow the program down greatly
+        //这个使用数组 
         float d1, d2, alpha, angle;
         int fromIndX, fromIndY, thisIndX, thisIndY; 
         bool lineCountFlag[N_SCAN] = {false};
-
+        //两个数组 保存点的坐标 
         queueIndX[0] = row;
         queueIndY[0] = col;
-        int queueSize = 1;
-        int queueStartInd = 0;
+        int queueSize = 1; 
+        int queueStartInd = 0; 
         int queueEndInd = 1;
 
         allPushedIndX[0] = row;
         allPushedIndY[0] = col;
         int allPushedIndSize = 1;
-        
+        //判断这个队列里面是否还有点 如果没有就不需要继续聚类了
         while(queueSize > 0){
-            // Pop point
+            // Pop point 取出点的坐标
             fromIndX = queueIndX[queueStartInd];
             fromIndY = queueIndY[queueStartInd];
-            --queueSize;
-            ++queueStartInd;
-            // Mark popped point
+            --queueSize;//队列个数要减
+            ++queueStartInd;//开始的位置要往后移动
+            // Mark popped point 标记点
             labelMat.at<int>(fromIndX, fromIndY) = labelCount;
             // Loop through all the neighboring grids of popped grid
+            //遍历邻近点
             for (auto iter = neighborIterator.begin(); iter != neighborIterator.end(); ++iter){
-                // new index
+                // new index  补偿到当前点 fromIndX代表行 fromIndY代表列
                 thisIndX = fromIndX + (*iter).first;
                 thisIndY = fromIndY + (*iter).second;
                 // index should be within the boundary
-                if (thisIndX < 0 || thisIndX >= N_SCAN)
+                if (thisIndX < 0 || thisIndX >= N_SCAN) //行数不能小于0 和 大于最大的线束
                     continue;
                 // at range image margin (left or right side)
-                if (thisIndY < 0)
+                if (thisIndY < 0)//列数 如果小于0就补偿到最后一列
                     thisIndY = Horizon_SCAN - 1;
-                if (thisIndY >= Horizon_SCAN)
+                if (thisIndY >= Horizon_SCAN)//大于1800 就补偿到第一列 
                     thisIndY = 0;
                 // prevent infinite loop (caused by put already examined point back)
+                //判断label是否被标记过 如果没有就判断和当前点是否相近
                 if (labelMat.at<int>(thisIndX, thisIndY) != 0)
                     continue;
 
@@ -414,22 +428,23 @@ public:
                               rangeMat.at<float>(thisIndX, thisIndY));
 
                 if ((*iter).first == 0)
-                    alpha = segmentAlphaX;
+                 //判断是左右的点 还是上下的点
+                    alpha = segmentAlphaX;//左右就是0.2度
                 else
-                    alpha = segmentAlphaY;
-
+                    alpha = segmentAlphaY;//上下就是2度 
+                    //计算夹角
                 angle = atan2(d2*sin(alpha), (d1 -d2*cos(alpha)));
-
+                    //如果角度大于、阈值segmentTheta 就认为它们是一类
                 if (angle > segmentTheta){
-
+                    //把它加到队列中来
                     queueIndX[queueEndInd] = thisIndX;
                     queueIndY[queueEndInd] = thisIndY;
-                    ++queueSize;
-                    ++queueEndInd;
+                    ++queueSize;//队列里面的个数要加1
+                    ++queueEndInd;//同样最后的位置也要加1
 
-                    labelMat.at<int>(thisIndX, thisIndY) = labelCount;
+                    labelMat.at<int>(thisIndX, thisIndY) = labelCount;//标记和当前的点是同一个label
                     lineCountFlag[thisIndX] = true;
-
+                    //保存本次聚类的结果
                     allPushedIndX[allPushedIndSize] = thisIndX;
                     allPushedIndY[allPushedIndSize] = thisIndY;
                     ++allPushedIndSize;
@@ -439,20 +454,23 @@ public:
 
         // check if this segment is valid
         bool feasibleSegment = false;
+        //如果聚类的点比较多 
         if (allPushedIndSize >= 30)
             feasibleSegment = true;
+         //如果点比较少 比如垂直的树干 如果水平方向上点比较多  并且横跨的线束也满足阈值 也认为聚类成功
         else if (allPushedIndSize >= segmentValidPointNum){
             int lineCount = 0;
             for (size_t i = 0; i < N_SCAN; ++i)
                 if (lineCountFlag[i] == true)
                     ++lineCount;
-            if (lineCount >= segmentValidLineNum)
+            if (lineCount >= segmentValidLineNum)//横跨的线束也满足阈值
                 feasibleSegment = true;            
         }
         // segment is valid, mark these points
+        //如果聚成一个类 label也要加 不然就会聚成一个类
         if (feasibleSegment == true){
             ++labelCount;
-        }else{ // segment is invalid, mark these points
+        }else{ // segment is invalid, mark these points 不成功聚类 会标号为99999 
             for (size_t i = 0; i < allPushedIndSize; ++i){
                 labelMat.at<int>(allPushedIndX[i], allPushedIndY[i]) = 999999;
             }

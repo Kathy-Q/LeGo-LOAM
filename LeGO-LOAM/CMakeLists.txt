@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(lego_loam)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3")
-
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3")
+set(CMAKE_CXX_FLAGS "-std=c++14")
 find_package(catkin REQUIRED COMPONENTS
   tf
   roscpp
@@ -22,7 +22,10 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(GTSAM REQUIRED QUIET)
 find_package(PCL REQUIRED QUIET)
-find_package(OpenCV REQUIRED QUIET)
+find_package(Boost REQUIRED COMPONENTS timer thread serialization chrono)
+#find_package(OpenCV REQUIRED QUIET)
+set(CMAKE_PREFIX_PATH "/usr/include/opencv4") 
+find_package(OpenCV 4.0 QUIET)
 
 catkin_package(
   INCLUDE_DIRS include
